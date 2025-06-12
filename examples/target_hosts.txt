@@ -1,0 +1,23 @@
+# Target Hosts Example
+# Each line contains one compute host name
+# Lines starting with # are comments and will be ignored
+# Empty lines are also ignored
+
+# Production compute nodes
+compute-node-01.example.com
+compute-node-02.example.com
+compute-node-03.example.com
+
+# Development compute nodes
+dev-compute-01.example.com
+dev-compute-02.example.com
+
+# Test compute nodes
+test-compute-01.example.com
+
+# High-performance compute nodes (for special workloads)
+# hpc-compute-01.example.com
+# hpc-compute-02.example.com
+
+# Note: The script will automatically load-balance VMs across these hosts
+# by selecting the host with the lowest current VM count

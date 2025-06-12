@@ -1,0 +1,22 @@
+# VM List Example
+# Each line contains one VM ID
+# Lines starting with # are comments and will be ignored
+# Empty lines are also ignored
+
+# Production VMs
+vm-12345678-1234-1234-1234-123456789012
+vm-87654321-4321-4321-4321-210987654321
+
+# Development VMs  
+vm-11111111-1111-1111-1111-111111111111
+vm-22222222-2222-2222-2222-222222222222
+vm-33333333-3333-3333-3333-333333333333
+
+# Test VMs
+vm-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+vm-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+
+# You can also use VM names if your OpenStack setup supports it
+# web-server-01
+# database-server-01
+# app-server-01
