@@ -156,7 +156,7 @@ get_host_vm_count() {
     local hostname="$1"
     
     local count
-    count=$(openstack server list --host "$hostname" -f json 2>/dev/null | jq '. | length' 2>/dev/null)
+    count=$(openstack server list --host "$hostname" --all-projects -f json 2>/dev/null | jq '. | length' 2>/dev/null)
     
     if [[ "$count" == "null" || -z "$count" ]]; then
         echo "0"
