@@ -10,7 +10,7 @@ param(
     [string]$HostsFile = "examples\target_hosts.txt",
     [string]$ConfigFile = "",
     [switch]$DryRun,
-    [switch]$Verbose,
+    [switch]$VerboseOutput,
     [switch]$AllHosts,
     [switch]$Summary,
     [int]$MaxRetries = 3,
@@ -60,10 +60,9 @@ $scriptCommand = ""
 switch ($Action) {
     "migrate" {
         $scriptCommand = "scripts/vm-migrate.sh $VmListFile $HostsFile"
-        
-        if ($ConfigFile) { $scriptCommand += " --config $ConfigFile" }
+          if ($ConfigFile) { $scriptCommand += " --config $ConfigFile" }
         if ($DryRun) { $scriptCommand += " --dry-run" }
-        if ($Verbose) { $scriptCommand += " --verbose" }
+        if ($VerboseOutput) { $scriptCommand += " --verbose" }
         if ($MaxRetries -ne 3) { $scriptCommand += " --max-retries $MaxRetries" }
         if ($Timeout -ne 600) { $scriptCommand += " --timeout $Timeout" }
     }

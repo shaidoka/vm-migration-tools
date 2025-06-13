@@ -48,24 +48,31 @@ log() {
     local message="$*"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     
-    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+    # Write to log file (create if doesn't exist, ignore errors)
+    echo "[$timestamp] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
     
     case "$level" in
         ERROR)
-            echo "[$timestamp] [$level] $message" >> "$ERROR_LOG"
+            echo "[$timestamp] [$level] $message" >> "$ERROR_LOG" 2>/dev/null || true
             echo -e "${RED}[$level] $message${NC}" >&2
             ;;
         WARN)
-            echo -e "${YELLOW}[$level] $message${NC}"
+            echo -e "${YELLOW}[$level] $message${NC}" >&2
             ;;
         SUCCESS)
-            echo -e "${GREEN}[$level] $message${NC}"
+            echo -e "${GREEN}[$level] $message${NC}" >&2
             ;;
         INFO)
-            echo -e "${BLUE}[$level] $message${NC}"
+            echo -e "${BLUE}[$level] $message${NC}" >&2
+            ;;
+        DEBUG)
+            # Show debug messages only in verbose mode
+            if [[ "${VERBOSE:-false}" == "true" ]]; then
+                echo -e "${BLUE}[$level] $message${NC}" >&2
+            fi
             ;;
         *)
-            echo "[$level] $message"
+            echo "[$level] $message" >&2
             ;;
     esac
 }
@@ -94,7 +101,7 @@ EOF
 }
 
 check_dependencies() {
-    local deps=("openstack" "nova" "jq")
+    local deps=("openstack" "jq")  # Removed nova as it's not strictly required
     local missing_deps=()
     
     for dep in "${deps[@]}"; do
@@ -106,13 +113,22 @@ check_dependencies() {
     if [[ ${#missing_deps[@]} -ne 0 ]]; then
         log "ERROR" "Missing dependencies: ${missing_deps[*]}"
         log "ERROR" "Please install missing dependencies and try again"
-        exit 1
+        if [[ "$DRY_RUN" != "true" ]]; then
+            exit 1
+        else
+            log "WARN" "Continuing with dry run despite missing dependencies"
+        fi
     fi
     
-    log "INFO" "All dependencies check passed"
+    log "INFO" "Dependencies check passed"
 }
 
 check_openstack_auth() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "INFO" "Skipping OpenStack authentication check in dry-run mode"
+        return 0
+    fi
+    
     if ! openstack token issue &> /dev/null; then
         log "ERROR" "OpenStack authentication failed"
         log "ERROR" "Please source your OpenStack credentials and try again"
@@ -130,7 +146,7 @@ get_vm_status() {
     local vm_id="$1"
     
     local status
-    status=$(openstack server show "$vm_id" -f json 2>/dev/null | jq -r '.status' 2>/dev/null)
+    status=$(openstack server show "$vm_id" -f json 2>/dev/null | jq -r '.status' 2>/dev/null) || status=""
     
     if [[ "$status" == "null" || -z "$status" ]]; then
         echo "NOT_FOUND"
@@ -143,7 +159,7 @@ get_vm_host() {
     local vm_id="$1"
     
     local host
-    host=$(openstack server show "$vm_id" -f json 2>/dev/null | jq -r '."OS-EXT-SRV-ATTR:host"' 2>/dev/null)
+    host=$(openstack server show "$vm_id" -f json 2>/dev/null | jq -r '."OS-EXT-SRV-ATTR:host"' 2>/dev/null) || host=""
     
     if [[ "$host" == "null" || -z "$host" ]]; then
         echo "UNKNOWN"
@@ -156,7 +172,7 @@ get_host_vm_count() {
     local hostname="$1"
     
     local count
-    count=$(openstack server list --host "$hostname" --all-projects -f json 2>/dev/null | jq '. | length' 2>/dev/null)
+    count=$(openstack server list --host "$hostname" --all-projects -f json 2>/dev/null | jq '. | length' 2>/dev/null) || count=""
     
     if [[ "$count" == "null" || -z "$count" ]]; then
         echo "0"
@@ -167,19 +183,24 @@ get_host_vm_count() {
 
 find_best_target_host() {
     local current_host="$1"
-    local -n target_hosts_ref=$2
+    declare -n target_hosts_ref_find=$2
     local best_host=""
     local min_count=999999
     
-    for host in "${target_hosts_ref[@]}"; do
-        # Skip current host
+    # Check if current host is already in target hosts list
+    for host in "${target_hosts_ref_find[@]}"; do
         if [[ "$host" == "$current_host" ]]; then
-            continue
+            log "INFO" "VM is already on target host $current_host - no migration needed"
+            return 2  # Special return code for "already on target host"
         fi
-        
+    done
+    
+    # Find best target host (excluding current host)
+    for host in "${target_hosts_ref_find[@]}"; do
         local vm_count
         vm_count=$(get_host_vm_count "$host")
         
+        # Log debug info to stderr/log only, never stdout
         log "DEBUG" "Host $host has $vm_count VMs"
         
         if [[ "$vm_count" -lt "$min_count" ]]; then
@@ -193,7 +214,8 @@ find_best_target_host() {
         return 1
     fi
     
-    echo "$best_host"
+    # Ensure only the best host is output to stdout
+    printf "%s" "$best_host"
     return 0
 }
 
@@ -261,11 +283,11 @@ perform_live_migration() {
     log "INFO" "Starting live migration of VM $vm_id to host $target_host"
     
     if [[ "$DRY_RUN" == "true" ]]; then
-        log "INFO" "[DRY RUN] Would execute: openstack server migrate --live-migration $target_host $vm_id"
+        log "INFO" "[DRY RUN] Would execute: openstack server migrate --live-migration --host $target_host $vm_id"
         return 0
     fi
     
-    if ! openstack server migrate --live-migration "$target_host" "$vm_id"; then
+    if ! openstack server migrate --live-migration --host "$target_host" "$vm_id"; then
         log "ERROR" "Failed to initiate live migration for VM $vm_id"
         return 1
     fi
@@ -320,7 +342,7 @@ perform_cold_migration() {
         case "$status" in
             "VERIFY_RESIZE")
                 log "INFO" "Cold migration completed, confirming resize"
-                if ! openstack server resize confirm "$vm_id"; then
+                if ! openstack server resize --confirm "$vm_id"; then
                     log "ERROR" "Failed to confirm resize for VM $vm_id"
                     return 1
                 fi
@@ -349,11 +371,21 @@ perform_cold_migration() {
 
 migrate_vm() {
     local vm_id="$1"
-    local -n target_hosts_ref=$2
+    declare -n target_hosts_ref=$2
     local max_retries="${3:-3}"
     local timeout="${4:-600}"
     
     log "INFO" "Processing VM: $vm_id"
+    
+    # In dry-run mode, simulate the process without calling OpenStack
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "INFO" "[DRY RUN] Simulating migration for VM $vm_id"
+        log "INFO" "[DRY RUN] Would check VM status and current host"
+        log "INFO" "[DRY RUN] Would select best target host from available hosts"
+        log "INFO" "[DRY RUN] Would perform migration based on VM state"
+        log "SUCCESS" "[DRY RUN] VM $vm_id migration simulation completed"
+        return 0
+    fi
     
     # Get VM status and current host
     local vm_status
@@ -372,8 +404,14 @@ migrate_vm() {
     # Find best target host
     local target_host
     if ! target_host=$(find_best_target_host "$current_host" target_hosts_ref); then
-        log "ERROR" "Failed to find suitable target host for VM $vm_id"
-        return 1
+        local find_result=$?
+        if [[ $find_result -eq 2 ]]; then
+            # VM is already on a target host, no migration needed
+            return 0
+        else
+            log "ERROR" "Failed to find suitable target host for VM $vm_id"
+            return 1
+        fi
     fi
     
     log "INFO" "Selected target host: $target_host (current load: $(get_host_vm_count "$target_host") VMs)"
@@ -560,8 +598,17 @@ main() {
     check_openstack_auth
     
     # Load VM list and target hosts
-    mapfile -t vm_list < <(grep -v '^#' "$vm_list_file" | grep -v '^[[:space:]]*$')
+    mapfile -t vm_list_raw < <(grep -v '^#' "$vm_list_file" | grep -v '^[[:space:]]*$')
     mapfile -t target_hosts < <(grep -v '^#' "$target_hosts_file" | grep -v '^[[:space:]]*$')
+    
+    # Filter VM list to remove any remaining empty entries
+    vm_list=()
+    for vm in "${vm_list_raw[@]}"; do
+        vm=$(echo "$vm" | xargs) # Trim whitespace
+        if [[ -n "$vm" ]]; then
+            vm_list+=("$vm")
+        fi
+    done
     
     log "INFO" "Loaded ${#vm_list[@]} VMs and ${#target_hosts[@]} target hosts"
     
@@ -585,24 +632,30 @@ main() {
     log "INFO" "Starting migration of $total_vms VMs"
     
     # Process each VM sequentially
+    local current_vm=0
+    
     for vm_id in "${vm_list[@]}"; do
-        # Skip empty lines and comments
-        if [[ -z "$vm_id" || "$vm_id" =~ ^[[:space:]]*# ]]; then
-            continue
-        fi
+        current_vm=$((current_vm + 1))
         
-        log "INFO" "=== Processing VM $vm_id ($(($successful_migrations + $failed_migrations + 1))/$total_vms) ==="
+        log "INFO" "=== Processing VM $vm_id ($current_vm/$total_vms) ==="
         
-        if migrate_vm "$vm_id" target_hosts "$max_retries" "$timeout"; then
-            ((successful_migrations++))
+        # Use error handling to prevent script exit on individual VM failures
+        set +e  # Temporarily disable exit on error for this section
+        migrate_vm "$vm_id" target_hosts "$max_retries" "$timeout"
+        local migration_result=$?
+        set -e  # Re-enable exit on error
+        
+        if [[ $migration_result -eq 0 ]]; then
+            successful_migrations=$((successful_migrations + 1))
             log "SUCCESS" "VM $vm_id migration completed"
         else
-            ((failed_migrations++))
+            failed_migrations=$((failed_migrations + 1))
             log "ERROR" "VM $vm_id migration failed"
         fi
         
-        log "INFO" "Progress: $((successful_migrations + failed_migrations))/$total_vms completed"
-        log "INFO" "=== End processing VM $vm_id ===\n"
+        log "INFO" "Progress: $current_vm/$total_vms completed (Success: $successful_migrations, Failed: $failed_migrations)"
+        log "INFO" "=== End processing VM $vm_id ==="
+        log "INFO" ""  # Empty line
         
         # Small delay between migrations to avoid overwhelming the system
         if [[ "$dry_run" == "false" ]]; then
@@ -618,7 +671,11 @@ main() {
     log "INFO" "=== Migration Summary ==="
     log "INFO" "Total VMs processed: $total_vms"
     log "SUCCESS" "Successful migrations: $successful_migrations"
-    log "ERROR" "Failed migrations: $failed_migrations"
+    if [[ $failed_migrations -eq 0 ]]; then
+        log "INFO" "Failed migrations: $failed_migrations"
+    else
+        log "ERROR" "Failed migrations: $failed_migrations"
+    fi
     log "INFO" "Total time: $total_time seconds"
     log "INFO" "Log file: $LOG_FILE"
     
