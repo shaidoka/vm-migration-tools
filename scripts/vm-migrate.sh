@@ -403,15 +403,17 @@ migrate_vm() {
     
     # Find best target host
     local target_host
-    if ! target_host=$(find_best_target_host "$current_host" target_hosts_ref); then
-        local find_result=$?
-        if [[ $find_result -eq 2 ]]; then
-            # VM is already on a target host, no migration needed
-            return 0
-        else
-            log "ERROR" "Failed to find suitable target host for VM $vm_id"
-            return 1
-        fi
+    local find_result=0
+    
+    target_host=$(find_best_target_host "$current_host" target_hosts_ref)
+    find_result=$?
+    
+    if [[ $find_result -eq 2 ]]; then
+        # VM is already on a target host, no migration needed
+        return 0
+    elif [[ $find_result -ne 0 ]]; then
+        log "ERROR" "Failed to find suitable target host for VM $vm_id"
+        return 1
     fi
     
     log "INFO" "Selected target host: $target_host (current load: $(get_host_vm_count "$target_host") VMs)"
